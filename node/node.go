@@ -3,7 +3,6 @@ package node
 import (
 	"fmt"
 	"math/rand"
-	"os"
 	"time"
 )
 
@@ -94,8 +93,14 @@ func (n *Node) startElection() {
 				votes++
 
 				if votes >= majority {
+					n.State.mu.Lock()
+					n.State.Role = Leader
+					n.State.mu.Unlock()
+
 					fmt.Println("Leader elected:", n.Id, "term:", term)
-					os.Exit(0)
+
+					n.startHeartbeat()
+					return
 				}
 			}
 
@@ -113,6 +118,42 @@ func (n *Node) startElection() {
 	n.State.Role = Follower
 	n.State.VotedFor = ""
 	n.State.mu.Unlock()
+}
+
+func (n *Node) startHeartbeat() {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		n.State.mu.Lock()
+		if n.State.Role != Leader {
+			n.State.mu.Unlock()
+			fmt.Println(n.Id, "not leader anymore")
+			return
+		}
+		peers := n.Peers
+		term := n.State.CurrentTerm
+		n.State.mu.Unlock()
+
+		for _, peer := range peers {
+			p := peer
+			go func() {
+				reply := n.RPC.SendAppendEntries(p, AppendEntriesArgs{
+					Term:     term,
+					LeaderId: n.Id,
+				})
+
+				if reply.Term > term {
+					n.State.mu.Lock()
+					n.State.CurrentTerm = reply.Term
+					n.State.Role = Follower
+					n.State.VotedFor = ""
+					n.State.mu.Unlock()
+				}
+			}()
+		}
+
+		<-ticker.C
+	}
 }
 
 func (n *Node) HandleRequestVote(args RequestVoteArgs) RequestVoteReply {
@@ -148,4 +189,26 @@ func (n *Node) HandleRequestVote(args RequestVoteArgs) RequestVoteReply {
 	}
 
 	return RequestVoteReply{Term: n.State.CurrentTerm, VoteGranted: false}
+}
+
+func (n *Node) HandleAppendEntries(args AppendEntriesArgs) AppendEntriesReply {
+	n.State.mu.Lock()
+	defer n.State.mu.Unlock()
+
+	if args.Term > n.State.CurrentTerm {
+		n.State.CurrentTerm = args.Term
+		n.State.Role = Follower
+		n.State.VotedFor = ""
+	}
+
+	if args.Term >= n.State.CurrentTerm {
+		select {
+		case n.ElectionResetChan <- Empty{}:
+		default:
+		}
+
+		return AppendEntriesReply{Term: n.State.CurrentTerm, Success: true}
+	}
+
+	return AppendEntriesReply{Term: n.State.CurrentTerm, Success: false}
 }

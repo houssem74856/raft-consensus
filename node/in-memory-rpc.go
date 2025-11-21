@@ -18,3 +18,8 @@ func (r *InMemoryRPC) SendRequestVote(to string, args RequestVoteArgs) RequestVo
 	target := r.nodes[to]
 	return target.HandleRequestVote(args)
 }
+
+func (r *InMemoryRPC) SendAppendEntries(to string, args AppendEntriesArgs) AppendEntriesReply {
+	target := r.nodes[to]
+	return target.HandleAppendEntries(args)
+}
