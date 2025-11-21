@@ -1,20 +1,32 @@
 package main
 
 import (
-	"fmt"
 	"simple-go-consensus/node"
 )
 
 func main() {
-	ids := []string{"n1", "n2", "n3"}
+	ids := []string{"n1", "n2", "n3", "n4"}
+
+	rpc := node.NewInMemoryRPC()
+
+	var nodes []*node.Node
 
 	for _, id := range ids {
-		go func(id string) {
-			n := node.NewNode(id)
-			n.Start()
-		}(id)
+		peers := []string{}
+		for _, other := range ids {
+			if other != id {
+				peers = append(peers, other)
+			}
+		}
+
+		n := node.NewNode(id, peers, rpc)
+		rpc.Register(n)
+		nodes = append(nodes, n)
 	}
 
-	fmt.Println("nodes started")
-	select {} // block forever to keep program running while nodes operate
+	for _, n := range nodes {
+		n.Start()
+	}
+
+	select {} // blocks forever to keep program running while nodes operate
 }
