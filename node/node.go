@@ -12,6 +12,7 @@ type Node struct {
 	State             *State
 	RPC               RPC
 	ElectionResetChan chan Empty
+	SM                *StateMachine
 
 	nextIndex  map[string]int
 	matchIndex map[string]int
@@ -26,6 +27,7 @@ func NewNode(id string, peers []string, rpc RPC) *Node {
 		State:             NewState(),
 		RPC:               rpc,
 		ElectionResetChan: make(chan Empty, 1),
+		SM:                NewStateMachine(),
 	}
 }
 
@@ -149,9 +151,11 @@ func (n *Node) startHeartbeat() {
 				ni := n.nextIndex[p]
 				prevLogIndex := ni - 1
 				prevLogTerm := 0
-				entries := []LogEntry{}
-				if prevLogIndex > 0 {
+				if prevLogIndex >= 0 {
 					prevLogTerm = n.State.Log[prevLogIndex].Term
+				}
+				entries := []LogEntry{}
+				if len(n.State.Log) > 0 {
 					entries = append([]LogEntry{}, n.State.Log[ni:]...)
 				}
 				term := n.State.CurrentTerm
@@ -198,7 +202,7 @@ func (n *Node) handleAppendEntriesReply(peer string, reply AppendEntriesReply, s
 
 	if reply.Success {
 		n.matchIndex[peer] += sentEntries
-		n.nextIndex[peer] = n.matchIndex[peer] + 1
+		n.nextIndex[peer] = n.matchIndex[peer]
 		n.updateCommitIndex()
 		return
 	}
@@ -217,6 +221,7 @@ func (n *Node) updateCommitIndex() {
 
 		if count >= ((len(n.Peers)+1)/2)+1 && n.State.Log[i].Term == n.State.CurrentTerm {
 			n.State.CommitIndex = i
+			n.applyEntries()
 			return
 		}
 	}
@@ -324,8 +329,36 @@ func (n *Node) HandleAppendEntries(args AppendEntriesArgs) AppendEntriesReply {
 
 	// commit index update
 	if args.LeaderCommit > n.State.CommitIndex {
+		//fmt.Println("yeeees")
 		n.State.CommitIndex = min(args.LeaderCommit, len(n.State.Log)-1)
+		n.applyEntries()
 	}
 
 	return AppendEntriesReply{Term: n.State.CurrentTerm, Success: true}
 }
+
+func (n *Node) applyEntries() {
+	for n.State.LastApplied < n.State.CommitIndex {
+		n.State.LastApplied++
+		entry := n.State.Log[n.State.LastApplied]
+
+		n.SM.Apply(entry)
+	}
+}
+
+/*func (n *Node) SubmitCommand(cmd Command) (ok bool, term int) {
+	n.State.mu.Lock()
+	defer n.State.mu.Unlock()
+
+	if n.State.Role != Leader {
+		return false, n.State.CurrentTerm
+	}
+
+	entry := LogEntry{
+		Term:    n.State.CurrentTerm,
+		Command: cmd,
+	}
+	n.State.Log = append(n.State.Log, entry)
+
+	return true, n.State.CurrentTerm
+}*/

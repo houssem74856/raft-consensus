@@ -5,6 +5,7 @@ import (
 )
 
 func main() {
+	port := 3000
 	ids := []string{"n1", "n2", "n3", "n4"}
 
 	rpc := node.NewInMemoryRPC()
@@ -26,6 +27,8 @@ func main() {
 
 	for _, n := range nodes {
 		n.Start()
+		n.StartServer(port)
+		port++
 	}
 
 	select {} // blocks forever to keep program running while nodes operate

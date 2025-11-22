@@ -14,7 +14,7 @@ const (
 
 type LogEntry struct {
 	Term    int
-	Command interface{}
+	Command Command
 }
 
 type State struct {
@@ -32,5 +32,7 @@ func NewState() *State {
 		Role:        Follower,
 		CurrentTerm: 0,
 		VotedFor:    "",
+		CommitIndex: -1,
+		LastApplied: -1,
 	}
 }
