@@ -12,11 +12,19 @@ const (
 	Leader
 )
 
+type LogEntry struct {
+	Term    int
+	Command interface{}
+}
+
 type State struct {
 	mu          sync.Mutex
 	Role        NodeState
 	CurrentTerm int
 	VotedFor    string
+	Log         []LogEntry
+	CommitIndex int
+	LastApplied int
 }
 
 func NewState() *State {

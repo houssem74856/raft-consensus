@@ -12,6 +12,9 @@ type Node struct {
 	State             *State
 	RPC               RPC
 	ElectionResetChan chan Empty
+
+	nextIndex  map[string]int
+	matchIndex map[string]int
 }
 
 type Empty struct{}
@@ -56,6 +59,12 @@ func (n *Node) startElection() {
 	n.State.Role = Candidate
 	n.State.VotedFor = n.Id
 	term := n.State.CurrentTerm
+
+	lastIndex := len(n.State.Log) - 1
+	lastTerm := 0
+	if lastIndex >= 0 {
+		lastTerm = n.State.Log[lastIndex].Term
+	}
 	n.State.mu.Unlock()
 
 	votes := 1
@@ -67,8 +76,10 @@ func (n *Node) startElection() {
 		p := peer
 		go func() {
 			reply := n.RPC.SendRequestVote(p, RequestVoteArgs{
-				Term:        term,
-				CandidateId: n.Id,
+				Term:         term,
+				CandidateId:  n.Id,
+				LastLogIndex: lastIndex,
+				LastLogTerm:  lastTerm,
 			})
 
 			votesChan <- reply
@@ -95,6 +106,13 @@ func (n *Node) startElection() {
 				if votes >= majority {
 					n.State.mu.Lock()
 					n.State.Role = Leader
+					lastIndex := len(n.State.Log)
+					n.nextIndex = map[string]int{}
+					n.matchIndex = map[string]int{}
+					for _, p := range n.Peers {
+						n.nextIndex[p] = lastIndex
+						n.matchIndex[p] = 0
+					}
 					n.State.mu.Unlock()
 
 					fmt.Println("Leader elected:", n.Id, "term:", term)
@@ -124,35 +142,83 @@ func (n *Node) startHeartbeat() {
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		n.State.mu.Lock()
-		if n.State.Role != Leader {
-			n.State.mu.Unlock()
-			fmt.Println(n.Id, "not leader anymore")
-			return
-		}
-		peers := n.Peers
-		term := n.State.CurrentTerm
-		n.State.mu.Unlock()
-
-		for _, peer := range peers {
+		for _, peer := range n.Peers {
 			p := peer
 			go func() {
+				n.State.mu.Lock()
+				ni := n.nextIndex[p]
+				prevLogIndex := ni - 1
+				prevLogTerm := 0
+				entries := []LogEntry{}
+				if prevLogIndex > 0 {
+					prevLogTerm = n.State.Log[prevLogIndex].Term
+					entries = append([]LogEntry{}, n.State.Log[ni:]...)
+				}
+				term := n.State.CurrentTerm
+				leaderCommit := n.State.CommitIndex
+				n.State.mu.Unlock()
+
 				reply := n.RPC.SendAppendEntries(p, AppendEntriesArgs{
-					Term:     term,
-					LeaderId: n.Id,
+					Term:         term,
+					LeaderId:     n.Id,
+					PrevLogIndex: prevLogIndex,
+					PrevLogTerm:  prevLogTerm,
+					Entries:      entries,
+					LeaderCommit: leaderCommit,
 				})
 
-				if reply.Term > term {
-					n.State.mu.Lock()
-					n.State.CurrentTerm = reply.Term
-					n.State.Role = Follower
-					n.State.VotedFor = ""
-					n.State.mu.Unlock()
-				}
+				n.handleAppendEntriesReply(p, reply, len(entries))
 			}()
 		}
 
 		<-ticker.C
+
+		n.State.mu.Lock()
+		role := n.State.Role
+		n.State.mu.Unlock()
+
+		if role != Leader {
+			fmt.Println(n.Id, "is not leader anymore")
+			return
+		}
+	}
+}
+
+func (n *Node) handleAppendEntriesReply(peer string, reply AppendEntriesReply, sentEntries int) {
+	n.State.mu.Lock()
+	defer n.State.mu.Unlock()
+
+	if reply.Term > n.State.CurrentTerm {
+		n.State.CurrentTerm = reply.Term
+		n.State.Role = Follower
+		n.State.VotedFor = ""
+
+		return
+	}
+
+	if reply.Success {
+		n.matchIndex[peer] += sentEntries
+		n.nextIndex[peer] = n.matchIndex[peer] + 1
+		n.updateCommitIndex()
+		return
+	}
+
+	n.nextIndex[peer]--
+}
+
+func (n *Node) updateCommitIndex() {
+	for i := len(n.State.Log) - 1; i > n.State.CommitIndex; i-- {
+		count := 1
+		for _, peer := range n.Peers {
+			if n.matchIndex[peer] >= i {
+				count++
+			}
+		}
+
+		if count >= ((len(n.Peers)+1)/2)+1 && n.State.Log[i].Term == n.State.CurrentTerm {
+			n.State.CommitIndex = i
+			return
+		}
 	}
 }
 
@@ -178,7 +244,20 @@ func (n *Node) HandleRequestVote(args RequestVoteArgs) RequestVoteReply {
 		n.State.VotedFor = ""
 	}
 
-	if args.Term >= n.State.CurrentTerm && n.State.VotedFor == "" {
+	lastIndex := len(n.State.Log) - 1
+	lastTerm := 0
+	if lastIndex >= 0 {
+		lastTerm = n.State.Log[lastIndex].Term
+	}
+
+	upToDate := false
+	if args.LastLogTerm > lastTerm {
+		upToDate = true
+	} else if args.LastLogTerm == lastTerm && args.LastLogIndex >= lastIndex {
+		upToDate = true
+	}
+
+	if args.Term >= n.State.CurrentTerm && n.State.VotedFor == "" && upToDate {
 		select {
 		case n.ElectionResetChan <- Empty{}:
 		default:
@@ -195,20 +274,58 @@ func (n *Node) HandleAppendEntries(args AppendEntriesArgs) AppendEntriesReply {
 	n.State.mu.Lock()
 	defer n.State.mu.Unlock()
 
+	if args.Term < n.State.CurrentTerm {
+		return AppendEntriesReply{Term: n.State.CurrentTerm, Success: false}
+	}
+
+	select {
+	case n.ElectionResetChan <- Empty{}:
+	default:
+	}
+
 	if args.Term > n.State.CurrentTerm {
 		n.State.CurrentTerm = args.Term
 		n.State.Role = Follower
 		n.State.VotedFor = ""
 	}
 
-	if args.Term >= n.State.CurrentTerm {
-		select {
-		case n.ElectionResetChan <- Empty{}:
-		default:
-		}
+	// log consistency check
+	if args.PrevLogIndex >= 0 && (args.PrevLogIndex >= len(n.State.Log) || n.State.Log[args.PrevLogIndex].Term != args.PrevLogTerm) {
+		/*// conflict optimization (optional)
+		conflictIndex := len(n.State.Log)
+		if args.PrevLogIndex < len(n.State.Log) {
+			term := n.State.Log[args.PrevLogIndex].Term
+			for i := args.PrevLogIndex; i >= 0 && n.State.Log[i].Term == term; i-- {
+				conflictIndex = i
+			}
+		}*/
 
-		return AppendEntriesReply{Term: n.State.CurrentTerm, Success: true}
+		return AppendEntriesReply{
+			Term:    n.State.CurrentTerm,
+			Success: false,
+		}
 	}
 
-	return AppendEntriesReply{Term: n.State.CurrentTerm, Success: false}
+	// append new entries
+	i := 0
+	for ; i < len(args.Entries); i++ {
+		pos := args.PrevLogIndex + 1 + i
+		if pos < len(n.State.Log) {
+			if n.State.Log[pos].Term != args.Entries[i].Term {
+				n.State.Log = n.State.Log[:pos]
+				break
+			}
+		} else {
+			break
+		}
+	}
+
+	n.State.Log = append(n.State.Log, args.Entries[i:]...)
+
+	// commit index update
+	if args.LeaderCommit > n.State.CommitIndex {
+		n.State.CommitIndex = min(args.LeaderCommit, len(n.State.Log)-1)
+	}
+
+	return AppendEntriesReply{Term: n.State.CurrentTerm, Success: true}
 }
