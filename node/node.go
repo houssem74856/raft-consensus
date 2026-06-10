@@ -88,7 +88,7 @@ func (n *Node) startElection() {
 		}()
 	}
 
-	electionTimeout := time.After(150 * time.Millisecond)
+	electionTimeout := time.After(900 * time.Millisecond)
 
 	for i := 0; i < len(n.Peers); i++ {
 		select {
@@ -329,7 +329,6 @@ func (n *Node) HandleAppendEntries(args AppendEntriesArgs) AppendEntriesReply {
 
 	// commit index update
 	if args.LeaderCommit > n.State.CommitIndex {
-		//fmt.Println("yeeees")
 		n.State.CommitIndex = min(args.LeaderCommit, len(n.State.Log)-1)
 		n.applyEntries()
 	}

@@ -1,0 +1,40 @@
+services:
+  n1:
+    build: .
+    environment:
+      NODE_ID: n1
+      GRPC_PORT: "50051"
+      HTTP_PORT: "3000"
+      PEERS: "n2:50051,n3:50051,n4:50051"
+    ports:
+      - "3000:3000"
+
+  n2:
+    build: .
+    environment:
+      NODE_ID: n2
+      GRPC_PORT: "50051"
+      HTTP_PORT: "3000"
+      PEERS: "n1:50051,n3:50051,n4:50051"
+    ports:
+      - "3001:3000"
+
+  n3:
+    build: .
+    environment:
+      NODE_ID: n3
+      GRPC_PORT: "50051"
+      HTTP_PORT: "3000"
+      PEERS: "n1:50051,n2:50051,n4:50051"
+    ports:
+      - "3002:3000"
+
+  n4:
+    build: .
+    environment:
+      NODE_ID: n4
+      GRPC_PORT: "50051"
+      HTTP_PORT: "3000"
+      PEERS: "n1:50051,n2:50051,n3:50051"
+    ports:
+      - "3003:3000"

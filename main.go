@@ -1,10 +1,13 @@
 package main
 
 import (
-	"simple-go-consensus/node"
+	"fmt"
+	"os"
+	"raft-consensus/node"
+	"strings"
 )
 
-func main() {
+/*func main() {
 	port := 3000
 	ids := []string{"n1", "n2", "n3", "n4"}
 
@@ -32,4 +35,43 @@ func main() {
 	}
 
 	select {} // blocks forever to keep program running while nodes operate
+}*/
+
+func main() {
+	id := os.Getenv("NODE_ID")
+	grpcPort := os.Getenv("GRPC_PORT")
+	httpPort := os.Getenv("HTTP_PORT")
+	peersEnv := os.Getenv("PEERS")
+
+	if id == "" || grpcPort == "" || httpPort == "" || peersEnv == "" {
+		fmt.Println("NODE_ID, GRPC_PORT, HTTP_PORT and PEERS env vars are required")
+		os.Exit(1)
+	}
+
+	peers := map[string]string{}
+	for _, p := range strings.Split(peersEnv, ",") {
+		parts := strings.SplitN(p, ":", 2)
+		peers[parts[0]] = parts[0] + ":" + parts[1]
+	}
+
+	peerIds := []string{}
+	for pid := range peers {
+		peerIds = append(peerIds, pid)
+	}
+
+	rpc := node.NewGrpcClients(peers)
+
+	n := node.NewNode(id, peerIds, rpc)
+
+	grpcPortInt := 0
+	fmt.Sscanf(grpcPort, "%d", &grpcPortInt)
+
+	httpPortInt := 0
+	fmt.Sscanf(httpPort, "%d", &httpPortInt)
+
+	n.StartGrpcServer(grpcPortInt)
+	n.StartHttpServer(httpPortInt)
+	n.Start()
+
+	select {}
 }

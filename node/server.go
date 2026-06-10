@@ -3,7 +3,11 @@ package node
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	pb "raft-consensus/proto"
+
+	"google.golang.org/grpc"
 )
 
 type Command struct {
@@ -11,7 +15,26 @@ type Command struct {
 	Value string `json:"value"`
 }
 
-func (n *Node) StartServer(port int) {
+func (n *Node) StartGrpcServer(port int) {
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+
+	if err != nil {
+		fmt.Println("grpc listening error on port", port, ":", err)
+	}
+
+	grpcServer := grpc.NewServer()
+	pb.RegisterRaftServer(grpcServer, NewRaftServer(n))
+
+	fmt.Println("node", n.Id, "grpc listening on port", port)
+
+	go func() {
+		if err := grpcServer.Serve(lis); err != nil {
+			fmt.Println("grpc server error on port", port, ":", err)
+		}
+	}()
+}
+
+func (n *Node) StartHttpServer(port int) {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/command", func(w http.ResponseWriter, r *http.Request) {
@@ -23,7 +46,7 @@ func (n *Node) StartServer(port int) {
 		var cmd Command
 		if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("invalid JSON"))
+			w.Write([]byte("invalid json"))
 			return
 		}
 
@@ -60,12 +83,11 @@ func (n *Node) StartServer(port int) {
 		w.Write([]byte(val))
 	})
 
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	fmt.Println("Node", n.Id, "listening on", addr)
+	fmt.Println("node", n.Id, "http listening on", fmt.Sprintf(":%d", port))
 
 	go func() {
-		if err := http.ListenAndServe(addr, mux); err != nil {
-			fmt.Println("Server error on port", port, ":", err)
+		if err := http.ListenAndServe(fmt.Sprintf(":%d", port), mux); err != nil {
+			fmt.Println("http server error on port", port, ":", err)
 		}
 	}()
 }
